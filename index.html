@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Roblox Object Receiver</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700;800&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg: #080c14;
+  --surface: #0d1420;
+  --panel: #111827;
+  --border: #1e293b;
+  --accent: #00e5ff;
+  --accent2: #7c3aed;
+  --green: #10b981;
+  --red: #ef4444;
+  --text: #e2e8f0;
+  --muted: #475569;
+  --code-bg: #060a10;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Background grid */
+body::before {
+  content:'';
+  position:fixed;
+  inset:0;
+  background-image:
+    linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events:none;
+  z-index:0;
+}
+
+.wrap {
+  position:relative;
+  z-index:1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+/* Header */
+header {
+  display:flex;
+  align-items:center;
+  gap:16px;
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo {
+  width: 40px; height: 40px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size: 20px;
+  flex-shrink:0;
+  box-shadow: 0 0 20px rgba(0,229,255,0.3);
+}
+
+header h1 {
+  font-family: 'Syne', sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  background: linear-gradient(90deg, var(--accent), #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+header p {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.status-dot {
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:11px;
+  color: var(--muted);
+}
+
+.dot {
+  width:8px;height:8px;border-radius:50%;
+  background: var(--muted);
+  transition: all 0.3s;
+}
+.dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
+.dot.error { background: var(--red); }
+
+@keyframes pulse {
+  0%,100%{ opacity:1; }
+  50%{ opacity:0.4; }
+}
+
+/* Layout */
+.grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media(max-width:768px){
+  .grid { grid-template-columns:1fr; }
+}
+
+/* Panels */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:11px;
+  font-weight:700;
+  color: var(--accent);
+  letter-spacing: 1.5px;
+  text-transform:uppercase;
+}
+
+.panel-header span { color: var(--muted); margin-left:auto; font-weight:400; }
+
+/* Upload zone */
+.upload-zone {
+  padding: 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.upload-zone p {
+  font-size:10px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+
+.drop-area {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align:center;
+  cursor:pointer;
+  transition: all 0.2s;
+  font-size:11px;
+  color: var(--muted);
+}
+.drop-area:hover, .drop-area.dragover {
+  border-color: var(--accent);
+  background: rgba(0,229,255,0.04);
+  color: var(--accent);
+}
+
+.drop-area input { display:none; }
+
+/* Object info */
+.obj-info {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.info-row {
+  display:flex;
+  justify-content:space-between;
+  padding: 4px 0;
+  font-size:11px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.info-row:last-child { border:none; }
+.info-row .k { color: var(--muted); }
+.info-row .v { color: var(--text); font-weight:600; }
+.info-row .v.accent { color: var(--accent); }
+
+/* Tree */
+.tree-container {
+  padding: 8px 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.tree-container::-webkit-scrollbar { width: 4px; }
+.tree-container::-webkit-scrollbar-track { background: transparent; }
+.tree-container::-webkit-scrollbar-thumb { background: var(--border); border-radius:4px; }
+
+.tree-node { user-select:none; }
+
+.tree-row {
+  display:flex;
+  align-items:center;
+  gap:4px;
+  padding: 4px 12px;
+  cursor:pointer;
+  transition: background 0.1s;
+  font-size:11px;
+}
+.tree-row:hover { background: rgba(255,255,255,0.04); }
+.tree-row.selected { background: rgba(0,229,255,0.08); border-left: 2px solid var(--accent); }
+
+.tree-arrow {
+  width:12px;
+  color: var(--muted);
+  font-size:8px;
+  transition: transform 0.15s;
+  flex-shrink:0;
+}
+.tree-arrow.open { transform:rotate(90deg); color:var(--accent); }
+.tree-arrow.leaf { visibility:hidden; }
+
+.tree-icon { width:16px; text-align:center; font-size:12px; flex-shrink:0; }
+.tree-name { color: #94a3b8; flex:1; }
+.tree-name.selected { color: var(--accent); }
+.tree-class { color: var(--muted); font-size:9px; }
+
+.tree-children { display:none; }
+.tree-children.open { display:block; }
+
+/* Empty state */
+.empty {
+  padding: 40px 20px;
+  text-align:center;
+  color: var(--muted);
+  font-size:11px;
+  line-height:2;
+}
+
+.empty-icon { font-size:32px; margin-bottom:8px; opacity:0.4; }
+
+/* Right panel — code output */
+.code-panel { display:flex; flex-direction:column; gap:16px; }
+
+.code-box {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow:hidden;
+}
+
+.code-header {
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:11px;
+  color: var(--muted);
+}
+
+.code-header .title { color: var(--text); font-weight:600; flex:1; }
+
+.btn-copy {
+  background: var(--accent);
+  color: #080c14;
+  border:none;
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px;
+  font-weight:700;
+  cursor:pointer;
+  transition: all 0.2s;
+  letter-spacing:0.5px;
+}
+.btn-copy:hover { background: #00c4dd; }
+.btn-copy.copied { background: var(--green); color:#fff; }
+
+pre {
+  padding: 16px;
+  font-size: 11px;
+  line-height: 1.8;
+  overflow-x: auto;
+  max-height: 340px;
+  color: #94a3b8;
+}
+
+pre::-webkit-scrollbar { width:4px; height:4px; }
+pre::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+/* Syntax highlight */
+.kw { color: #7c3aed; }
+.fn { color: #00e5ff; }
+.str { color: #10b981; }
+.num { color: #f59e0b; }
+.cm { color: #334155; }
+.prop { color: #e879f9; }
+
+/* Props table */
+.props-table {
+  padding: 12px 16px;
+  max-height: 200px;
+  overflow-y:auto;
+}
+
+.prop-row {
+  display:grid;
+  grid-template-columns: 140px 1fr;
+  gap:8px;
+  padding:4px 0;
+  font-size:11px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.prop-row:last-child { border:none; }
+.prop-key { color: #e879f9; }
+.prop-val { color: #94a3b8; word-break:break-all; }
+
+/* Toast */
+.toast {
+  position:fixed;
+  bottom:24px;
+  right:24px;
+  background: var(--green);
+  color:#fff;
+  padding:10px 20px;
+  border-radius:8px;
+  font-size:12px;
+  font-weight:600;
+  z-index:100;
+  transform: translateY(80px);
+  opacity:0;
+  transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1);
+}
+.toast.show { transform:translateY(0); opacity:1; }
+
+/* Paste hint */
+.hint {
+  padding: 12px 16px;
+  background: rgba(124,58,237,0.1);
+  border: 1px solid rgba(124,58,237,0.3);
+  border-radius:8px;
+  font-size:11px;
+  color: #a78bfa;
+  line-height:1.7;
+}
+.hint strong { color:#c4b5fd; }
+
+/* Toolbar */
+.toolbar {
+  display:flex;
+  gap:8px;
+  margin-bottom:4px;
+}
+.btn-sm {
+  padding:6px 14px;
+  border-radius:6px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--muted);
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px;
+  cursor:pointer;
+  transition:all 0.2s;
+}
+.btn-sm:hover { border-color:var(--accent); color:var(--accent); }
+.btn-sm.active { background:rgba(0,229,255,0.1); border-color:var(--accent); color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">⬡</div>
+    <div>
+      <h1>ROBLOX OBJECT RECEIVER</h1>
+      <p>Nhận data từ game · Tạo Lua code · Copy & paste vào Studio</p>
+    </div>
+    <div class="status-dot">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText">Chờ data...</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- Left: Object tree -->
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          📦 Object Data
+          <span id="objCount">—</span>
+        </div>
+
+        <!-- Upload / Paste JSON -->
+        <div class="upload-zone">
+          <p>Paste JSON từ game vào đây, hoặc drag & drop file .json</p>
+          <div class="drop-area" id="dropArea" onclick="document.getElementById('fileInput').click()">
+            <input type="file" id="fileInput" accept=".json"/>
+            <div>📂 Click hoặc kéo file JSON vào đây</div>
+          </div>
+        </div>
+
+        <!-- Paste textarea hidden trigger -->
+        <div style="padding:0 16px 12px">
+          <textarea id="jsonInput" placeholder='Hoặc paste JSON trực tiếp vào đây rồi nhấn Enter...'
+            style="width:100%;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;
+            color:var(--text);font-family:'JetBrains Mono',monospace;font-size:10px;
+            padding:8px;resize:vertical;min-height:60px;outline:none;"></textarea>
+          <button class="btn-sm" style="margin-top:6px;width:100%;" onclick="loadFromTextarea()">▶ Load JSON</button>
+        </div>
+
+        <!-- Object info -->
+        <div class="obj-info" id="objInfo" style="display:none">
+          <div class="info-row"><span class="k">Name</span><span class="v accent" id="infoName">—</span></div>
+          <div class="info-row"><span class="k">Class</span><span class="v" id="infoClass">—</span></div>
+          <div class="info-row"><span class="k">Children</span><span class="v" id="infoChildren">—</span></div>
+        </div>
+
+        <!-- Tree -->
+        <div class="tree-container" id="treeContainer">
+          <div class="empty">
+            <div class="empty-icon">🎮</div>
+            <div>Chưa có data từ game</div>
+            <div>Nhấn Export trong game hoặc paste JSON</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Code output -->
+    <div class="code-panel">
+
+      <div class="hint">
+        <strong>Cách dùng:</strong> Export object từ game Roblox → paste JSON bên trái → copy Lua code bên dưới → dán vào <strong>Command Bar</strong> hoặc <strong>Script</strong> trong Studio
+      </div>
+
+      <!-- Properties -->
+      <div class="panel" id="propsPanel" style="display:none">
+        <div class="panel-header">🔧 Properties <span id="propsCount">0</span></div>
+        <div class="props-table" id="propsTable"></div>
+      </div>
+
+      <!-- Lua Code -->
+      <div class="code-box">
+        <div class="code-header">
+          <span class="title">📜 Generated Lua Code</span>
+          <div class="toolbar">
+            <button class="btn-sm active" id="btnCommandBar" onclick="setMode('commandbar')">Command Bar</button>
+            <button class="btn-sm" id="btnScript" onclick="setMode('script')">Script</button>
+          </div>
+          <button class="btn-copy" id="copyBtn" onclick="copyCode()">Copy</button>
+        </div>
+        <pre id="codeOutput"><span style="color:var(--muted)">-- Code sẽ xuất hiện ở đây sau khi load data từ game...</span></pre>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== State ====================
+let currentData = null;
+let selectedNode = null;
+let codeMode = 'commandbar'; // commandbar | script
+
+// ==================== Icons ====================
+const ICONS = {
+  Part:'🟦', Model:'📁', MeshPart:'🔷', UnionOperation:'🔶',
+  SpawnLocation:'🏁', Camera:'📷', Script:'📜', LocalScript:'📜',
+  ModuleScript:'📜', PointLight:'💡', SurfaceGui:'🖼', BillboardGui:'🖼',
+  ScreenGui:'🖼', Frame:'▭', TextLabel:'Ⓣ', TextButton:'🔘',
+  ImageLabel:'🖼', BasePart:'🟦', default:'📄'
+};
+
+// ==================== Load Data ====================
+function loadData(data) {
+  currentData = data;
+  selectedNode = data;
+  renderTree(data);
+  renderCode(data);
+  renderProps(data);
+  updateInfo(data);
+
+  document.getElementById('statusDot').className = 'dot live';
+  document.getElementById('statusText').textContent = 'Data loaded ✓';
+  showToast('✅ Data loaded: ' + data.Name);
+}
+
+function loadFromTextarea() {
+  const txt = document.getElementById('jsonInput').value.trim();
+  if (!txt) return;
+  try {
+    const data = JSON.parse(txt);
+    loadData(data);
+  } catch(e) {
+    showToast('❌ JSON không hợp lệ!', true);
+  }
+}
+
+// ==================== Tree ====================
+function renderTree(data) {
+  const container = document.getElementById('treeContainer');
+  container.innerHTML = '';
+  container.appendChild(makeTreeNode(data, 0));
+
+  const count = countNodes(data);
+  document.getElementById('objCount').textContent = count + ' objects';
+}
+
+function countNodes(node) {
+  let c = 1;
+  for (const ch of (node.Children || [])) c += countNodes(ch);
+  return c;
+}
+
+function makeTreeNode(node, depth) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tree-node';
+
+  const hasChildren = node.Children && node.Children.length > 0;
+  const icon = ICONS[node.ClassName] || ICONS.default;
+
+  const row = document.createElement('div');
+  row.className = 'tree-row' + (node === currentData ? ' selected' : '');
+  row.style.paddingLeft = (12 + depth * 16) + 'px';
+
+  const arrow = document.createElement('span');
+  arrow.className = 'tree-arrow' + (hasChildren ? '' : ' leaf');
+  arrow.textContent = '▶';
+
+  const ico = document.createElement('span');
+  ico.className = 'tree-icon';
+  ico.textContent = icon;
+
+  const name = document.createElement('span');
+  name.className = 'tree-name' + (node === currentData ? ' selected' : '');
+  name.textContent = node.Name;
+
+  const cls = document.createElement('span');
+  cls.className = 'tree-class';
+  cls.textContent = node.ClassName;
+
+  row.append(arrow, ico, name, cls);
+  wrap.appendChild(row);
+
+  let childWrap = null;
+  if (hasChildren) {
+    childWrap = document.createElement('div');
+    childWrap.className = 'tree-children';
+    node.Children.forEach(ch => childWrap.appendChild(makeTreeNode(ch, depth + 1)));
+    wrap.appendChild(childWrap);
+
+    arrow.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = childWrap.classList.toggle('open');
+      arrow.classList.toggle('open', open);
+    });
+  }
+
+  row.addEventListener('click', () => {
+    // Deselect old
+    document.querySelectorAll('.tree-row.selected').forEach(r => r.classList.remove('selected'));
+    document.querySelectorAll('.tree-name.selected').forEach(r => r.classList.remove('selected'));
+
+    row.classList.add('selected');
+    name.classList.add('selected');
+    selectedNode = node;
+
+    renderCode(node);
+    renderProps(node);
+    updateInfo(node);
+  });
+
+  return wrap;
+}
+
+// ==================== Info ====================
+function updateInfo(node) {
+  document.getElementById('objInfo').style.display = 'block';
+  document.getElementById('infoName').textContent = node.Name;
+  document.getElementById('infoClass').textContent = node.ClassName;
+  document.getElementById('infoChildren').textContent = (node.Children || []).length;
+}
+
+// ==================== Props ====================
+function renderProps(node) {
+  const panel = document.getElementById('propsPanel');
+  const table = document.getElementById('propsTable');
+  const props = node.Properties || {};
+  const keys = Object.keys(props);
+
+  if (keys.length === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  document.getElementById('propsCount').textContent = keys.length;
+
+  table.innerHTML = keys.map(k => {
+    let val = props[k];
+    if (Array.isArray(val)) val = val.map(n => +n.toFixed(3)).join(', ');
+    return `<div class="prop-row">
+      <span class="prop-key">${k}</span>
+      <span class="prop-val">${val}</span>
+    </div>`;
+  }).join('');
+}
+
+// ==================== Code Gen ====================
+function setMode(mode) {
+  codeMode = mode;
+  document.getElementById('btnCommandBar').classList.toggle('active', mode === 'commandbar');
+  document.getElementById('btnScript').classList.toggle('active', mode === 'script');
+  if (selectedNode) renderCode(selectedNode);
+}
+
+function generateLua(node, parentVar, depth) {
+  const safeName = node.Name.replace(/[^a-zA-Z0-9]/g, '_');
+  const varName = `${safeName}_${depth}`;
+  const p = node.Properties || {};
+  const lines = [];
+
+  lines.push(`local ${varName} = Instance.new("${node.ClassName}")`);
+
+  if (p.Size) lines.push(`${varName}.Size = Vector3.new(${p.Size.map(n=>+n.toFixed(4)).join(', ')})`);
+  if (p.Position) lines.push(`${varName}.Position = Vector3.new(${p.Position.map(n=>+n.toFixed(4)).join(', ')})`);
+  if (p.BrickColor) lines.push(`${varName}.BrickColor = BrickColor.new("${p.BrickColor}")`);
+  if (p.Transparency !== undefined) lines.push(`${varName}.Transparency = ${p.Transparency}`);
+  if (p.Anchored !== undefined) lines.push(`${varName}.Anchored = ${p.Anchored}`);
+
+  lines.push(`${varName}.Name = "${node.Name}"`);
+  lines.push(`${varName}.Parent = ${parentVar}`);
+
+  for (let i = 0; i < (node.Children || []).length; i++) {
+    lines.push('');
+    lines.push(...generateLua(node.Children[i], varName, depth * 10 + i + 1).split('\n'));
+  }
+
+  return lines.join('\n');
+}
+
+function renderCode(node) {
+  const raw = generateLua(node, 'workspace', 0);
+
+  let output;
+  if (codeMode === 'script') {
+    output = `-- Generated by Roblox Object Receiver\n-- Object: ${node.Name} [${node.ClassName}]\n\n${raw}`;
+  } else {
+    // Command bar: single line friendly (no multi-line comments)
+    output = raw;
+  }
+
+  // Syntax highlight
+  const highlighted = output
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^(--.*)/gm, '<span class="cm">$1</span>')
+    .replace(/\b(local|and|or|not|if|then|else|elseif|end|for|do|while|repeat|until|return|function|true|false|nil|in)\b/g, '<span class="kw">$1</span>')
+    .replace(/\b(Instance\.new|Vector3\.new|BrickColor\.new|workspace)\b/g, '<span class="fn">$1</span>')
+    .replace(/"([^"]*)"/g, '<span class="str">"$1"</span>')
+    .replace(/\b(\d+\.?\d*)\b/g, '<span class="num">$1</span>');
+
+  document.getElementById('codeOutput').innerHTML = highlighted;
+  document.getElementById('codeOutput')._raw = output;
+}
+
+// ==================== Copy ====================
+function copyCode() {
+  const raw = document.getElementById('codeOutput')._raw;
+  if (!raw) return;
+  navigator.clipboard.writeText(raw).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    showToast('📋 Code đã copy! Dán vào Command Bar trong Studio.');
+  });
+}
+
+// ==================== Toast ====================
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = isError ? 'var(--red)' : 'var(--green)';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ==================== File Drop ====================
+const drop = document.getElementById('dropArea');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragover'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try { loadData(JSON.parse(ev.target.result)); }
+    catch { showToast('❌ File JSON không hợp lệ!', true); }
+  };
+  reader.readAsText(file);
+});
+
+document.getElementById('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try { loadData(JSON.parse(ev.target.result)); }
+    catch { showToast('❌ File JSON không hợp lệ!', true); }
+  };
+  reader.readAsText(file);
+});
+
+// ==================== API Polling (nhận từ server) ====================
+// Nếu bạn có server Node.js riêng, bỏ comment đoạn này
+/*
+async function pollServer() {
+  try {
+    const res = await fetch('http://localhost:3000/api/data');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && data.Name !== (currentData && currentData.Name)) {
+      loadData(data);
+    }
+  } catch(e) {}
+}
+setInterval(pollServer, 3000); // Poll mỗi 3 giây
+*/
+
+// ==================== Demo data ====================
+// Tự load demo để preview giao diện
+const demoData = {
+  ClassName:"Model", Name:"MyBuilding",
+  Properties:{},
+  Children:[
+    {ClassName:"Part",Name:"Foundation",Properties:{Size:[20,1,20],Position:[0,0.5,0],BrickColor:"Dark grey",Anchored:true,Transparency:0},Children:[]},
+    {ClassName:"Part",Name:"Wall_Front",Properties:{Size:[20,8,0.5],Position:[0,4.5,10],BrickColor:"Light grey",Anchored:true,Transparency:0},Children:[]},
+    {ClassName:"Part",Name:"Wall_Back",Properties:{Size:[20,8,0.5],Position:[0,4.5,-10],BrickColor:"Light grey",Anchored:true,Transparency:0},Children:[]},
+    {ClassName:"Model",Name:"Roof",Properties:{},Children:[
+      {ClassName:"Part",Name:"RoofMain",Properties:{Size:[22,1,22],Position:[0,9,0],BrickColor:"Reddish brown",Anchored:true,Transparency:0},Children:[]}
+    ]}
+  ]
+};
+loadData(demoData);
+</script>
+</body>
+</html>
