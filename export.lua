@@ -668,6 +668,7 @@ outText.Font = Enum.Font.Code
 outText.TextXAlignment = Enum.TextXAlignment.Left
 outText.TextYAlignment = Enum.TextYAlignment.Top
 outText.TextWrapped = true
+outText.ClearTextOnFocus = false
 outText.AutomaticSize = Enum.AutomaticSize.Y
 outText.ZIndex = 4
 outText.Parent = outScroll
