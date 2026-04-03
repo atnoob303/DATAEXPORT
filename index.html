@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Roblox Object Receiver</title>
+<title>Roblox Object Receiver v0.1</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700;800&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
 <style>
 :root {
@@ -444,7 +444,25 @@ pre::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
     <div class="code-panel">
 
       <div class="hint">
-        <strong>Cách dùng:</strong> Export object từ game Roblox → paste JSON bên trái → copy Lua code bên dưới → dán vào <strong>Command Bar</strong> hoặc <strong>Script</strong> trong Studio
+        <strong>Cách dùng:</strong> Nhập Firebase URL bên dưới → Export trong game → web tự nhận sau 3 giây → copy Lua code → dán vào <strong>Command Bar</strong> trong Studio
+      </div>
+
+      <!-- Firebase URL input -->
+      <div class="panel">
+        <div class="panel-header">🔥 Firebase Config</div>
+        <div style="padding:12px 16px;display:flex;gap:8px;align-items:center;">
+          <input id="firebaseInput" type="text"
+            placeholder="https://your-project-default-rtdb.firebaseio.com/object.json"
+            style="flex:1;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;
+            color:var(--text);font-family:'JetBrains Mono',monospace;font-size:10px;
+            padding:7px 10px;outline:none;transition:border-color 0.2s;"
+            onfocus="this.style.borderColor='var(--accent)'"
+            onblur="this.style.borderColor='var(--border)'"/>
+          <button class="btn-sm" onclick="applyFirebaseURL()" style="flex-shrink:0;border-color:var(--accent);color:var(--accent);">Apply</button>
+        </div>
+        <div style="padding:0 16px 10px;font-size:10px;color:var(--muted);line-height:1.8;">
+          Trong Lua script đổi: <code style="color:#f59e0b;background:rgba(245,158,11,0.1);padding:1px 5px;border-radius:3px;">EXPORT_URL = "https://..../object.json"</code>
+        </div>
       </div>
 
       <!-- Properties -->
@@ -725,24 +743,58 @@ document.getElementById('fileInput').addEventListener('change', e => {
   reader.readAsText(file);
 });
 
-// ==================== API Polling (nhận từ server) ====================
-// Nếu bạn có server Node.js riêng, bỏ comment đoạn này
-/*
-async function pollServer() {
-  try {
-    const res = await fetch('http://localhost:3000/api/data');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data && data.Name !== (currentData && currentData.Name)) {
-      loadData(data);
-    }
-  } catch(e) {}
+// ==================== Firebase Config ====================
+function applyFirebaseURL() {
+  const input = document.getElementById('firebaseInput').value.trim();
+  if (!input || !input.startsWith('https://')) {
+    showToast('❌ URL không hợp lệ! Phải bắt đầu bằng https://', true);
+    return;
+  }
+  FIREBASE_URL = input.endsWith('.json') ? input : input.replace(/\/$/, '') + '/object.json';
+  lastDataHash = null;
+  clearInterval(window._pollTimer);
+  window._pollTimer = setInterval(pollFirebase, 10000);
+  pollFirebase();
+  showToast('🔥 Firebase đã kết nối! Đang chờ data...');
+  document.getElementById('statusDot').className = 'dot';
+  document.getElementById('statusText').textContent = 'Đang poll...';
 }
-setInterval(pollServer, 3000); // Poll mỗi 3 giây
-*/
+
+// ==================== Firebase Polling ====================
+// ⚠️ Đổi URL này thành Firebase Realtime Database của bạn
+let FIREBASE_URL = "https://dataroblox-c462f-default-rtdb.asia-southeast1.firebasedatabase.app/object.json";
+
+let lastDataHash = null;
+
+async function pollFirebase() {
+  // Nếu chưa đổi URL thì bỏ qua
+  if (FIREBASE_URL.includes("YOUR-PROJECT")) return;
+
+  try {
+    const res = await fetch(FIREBASE_URL);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data || !data.Name) return;
+
+    // So sánh hash đơn giản để tránh reload liên tục
+    const hash = JSON.stringify(data).length + data.Name;
+    if (hash === lastDataHash) return;
+    lastDataHash = hash;
+
+    loadData(data);
+  } catch(e) {
+    document.getElementById('statusDot').className = 'dot error';
+    document.getElementById('statusText').textContent = 'Firebase lỗi';
+  }
+}
+
+// Chỉ bật polling khi URL đã được đổi
+if (!FIREBASE_URL.includes("YOUR-PROJECT")) {
+  window._pollTimer = setInterval(pollFirebase, 10000);
+  pollFirebase();
+}
 
 // ==================== Demo data ====================
-// Tự load demo để preview giao diện
 const demoData = {
   ClassName:"Model", Name:"MyBuilding",
   Properties:{},
