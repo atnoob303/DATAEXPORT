@@ -415,6 +415,7 @@ outText.TextYAlignment=Enum.TextYAlignment.Top;outText.TextWrapped=true
 outText.AutomaticSize=Enum.AutomaticSize.Y;outText.ZIndex=4
 outText.ClearTextOnFocus=false  -- ✅ Không mất text khi click
 outText.TextEditable=false       -- Readonly display
+outText.MultiLine = true
 
 outText:GetPropertyChangedSignal("TextBounds"):Connect(function()
 	outScroll.CanvasSize=UDim2.new(0,0,0,outText.TextBounds.Y+16)
