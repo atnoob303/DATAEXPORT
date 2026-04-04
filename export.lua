@@ -163,55 +163,98 @@ local function safeVar(name,idx)
 	return (name:gsub("[^%w]","_")).."_"..idx
 end
 
--- ==================== FUNCTION-STYLE LUA CODEGEN ====================
+-- ==================== GENERIC CODEGEN (Tab Lua + Tab FX) ====================
 --[[
-  Sinh code dạng:
-    local function createPart_<suffix>()  ...  return part end
-    local function createAttachments_<suffix>(part)  ...  return att end
-    local function createEffects_<suffix>(part, att)  ...  end
+  Ý tưởng: định nghĩa 3 generic functions 1 lần ở đầu output,
+  sau đó mỗi object/part chỉ cần GỌI với props inline dạng table.
 
-  Với Model/Folder → sinh createModel_<suffix>(parent) chứa toàn bộ cây con.
-  Các BasePart con trong Model → dùng 3 sub-functions local bên trong createModel.
+  Output mẫu:
+  ┌─ PHẦN 1: 3 generic functions (luôn có, dùng chung) ────────────────────┐
+  │  local function createPart(name, className, props, parent)             │
+  │  local function createAttachment(name, parent, props)                  │
+  │  local function createEffect(className, name, parent, att, props)      │
+  └────────────────────────────────────────────────────────────────────────┘
+  ┌─ PHẦN 2: call lines gọn cho từng object ───────────────────────────────┐
+  │  local p1 = createPart("MyPart","Part",{Size=...,Anchored=true},workspace)│
+  │  local a1 = createAttachment("AttP",p1,{Position=Vector3.new(0,1,0)}) │
+  │  createEffect("ParticleEmitter","FX",p1,{Attachment0=a1},{Rate=20,...})│
+  └────────────────────────────────────────────────────────────────────────┘
+  createModel wrap toàn bộ cây, bên trong gọi 3 functions trên.
 ]]
 
--- Sinh props lines cho 1 instance vào biến varName, indent ind
-local function genPropsLines(inst, varName, ind, showCmt)
-	local lines = {}
+-- ── Serialize props của 1 instance thành chuỗi "{k=v, k2=v2}" ─────────────
+local function propsToTable(inst, skipProps)
+	skipProps = skipProps or {}
 	local props = getProps(inst)
-	-- Ưu tiên prop quan trọng
 	local priority = {"Size","Position","CFrame","Color","BrickColor","Material",
-		"Transparency","Anchored","CanCollide","Shape","MeshId","TextureID"}
-	local shown = {}
-	for _,prop in ipairs(priority) do
-		if props[prop] ~= nil then
+		"Transparency","Reflectance","Anchored","CanCollide","Shape","MeshId","TextureID"}
+	local parts = {}
+	local seen = {}
+	-- Priority props trước
+	for _, prop in ipairs(priority) do
+		if props[prop] ~= nil and not skipProps[prop] then
 			local lua = valToLua(props[prop])
 			if lua ~= "nil" then
-				table.insert(lines, ind..string.format('%s.%s = %s', varName, prop, lua))
-				shown[prop] = true
+				table.insert(parts, string.format('%s=%s', prop, lua))
+				seen[prop] = true
 			end
 		end
 	end
-	for prop,val in pairs(props) do
-		if not shown[prop] then
+	-- Còn lại
+	for prop, val in pairs(props) do
+		if not seen[prop] and not skipProps[prop] then
 			local lua = valToLua(val)
 			if lua ~= "nil" then
-				table.insert(lines, ind..string.format('%s.%s = %s', varName, prop, lua))
+				table.insert(parts, string.format('%s=%s', prop, lua))
 			end
 		end
 	end
-	table.insert(lines, ind..string.format('%s.Name = "%s"', varName, inst.Name))
-	return lines
+	if #parts == 0 then return "{}" end
+	-- Nếu ngắn thì 1 dòng, dài thì multiline
+	local inline = "{"..table.concat(parts, ", ").."}"
+	if #inline <= 80 then
+		return inline
+	else
+		return "{\n        "..table.concat(parts, ",\n        ").."\n    }"
+	end
 end
 
--- Tạo 3 functions cho 1 BasePart instance
--- Trả về {funcLines=[], callLines=[]}
-local function genPartFunctions(part, suffix, parentVar, ind0, showCmt)
-	local lines = {}
-	local I = ind0 or ""   -- indent ngoài (nếu nằm trong Model thì có indent)
-	local i1 = I.."    "   -- indent bên trong function
+-- ── 3 generic function definitions (xuất ra output 1 lần) ─────────────────
+local GENERIC_FUNCTIONS = [[
+local function createPart(name, className, props, parent)
+    local p = Instance.new(className)
+    p.Name = name
+    for k, v in pairs(props) do p[k] = v end
+    p.Parent = parent or workspace
+    return p
+end
 
+local function createAttachment(name, parent, props)
+    local a = Instance.new("Attachment")
+    a.Name = name
+    for k, v in pairs(props or {}) do a[k] = v end
+    a.Parent = parent
+    return a
+end
+
+local function createEffect(className, name, parent, att, props)
+    local e = Instance.new(className)
+    e.Name = name
+    if att then
+        if att.Attachment0 then e.Attachment0 = att.Attachment0 end
+        if att.Attachment1 then e.Attachment1 = att.Attachment1 end
+    end
+    for k, v in pairs(props or {}) do e[k] = v end
+    e.Parent = parent
+    return e
+end
+]]
+
+-- ── Sinh call lines cho 1 BasePart (attachments + effects) ────────────────
+local function genPartCallLines(part, partVar, showCmt)
+	local lines = {}
 	local attachments, effects, others = {}, {}, {}
-	for _,child in ipairs(part:GetChildren()) do
+	for _, child in ipairs(part:GetChildren()) do
 		if ATTACHMENT_CLASSES[child.ClassName] then
 			table.insert(attachments, child)
 		elseif EFFECT_CLASSES[child.ClassName] then
@@ -221,183 +264,54 @@ local function genPartFunctions(part, suffix, parentVar, ind0, showCmt)
 		end
 	end
 
-	-- ── createPart ─────────────────────────────────────────────
-	if showCmt then table.insert(lines, I.."-- ── Part: "..part.Name.." ────────────────────────────────") end
-	table.insert(lines, I..string.format("local function createPart_%s()", suffix))
-	if showCmt then table.insert(lines, i1.."-- Tạo BasePart và các children không phải effect/attachment") end
-	table.insert(lines, i1..string.format('local part = Instance.new("%s")', part.ClassName))
-	for _,l in ipairs(genPropsLines(part, "part", i1, showCmt)) do table.insert(lines, l) end
-	table.insert(lines, i1..string.format('part.Parent = %s', parentVar))
+	-- Attachment calls → lưu varname để dùng cho effect
+	local attVars = {} -- name → varName
+	for ai, a in ipairs(attachments) do
+		local aVar = string.format("att%d", ai)
+		attVars[a.Name] = aVar
+		local propStr = propsToTable(a)
+		if showCmt then table.insert(lines, string.format('-- Attachment: %s', a.Name)) end
+		table.insert(lines, string.format('local %s = createAttachment("%s", %s, %s)',
+			aVar, a.Name, partVar, propStr))
+	end
 
-	-- Children khác (không phải effect/attachment) → tạo thẳng bên trong
+	-- Effect calls
+	for _, fx in ipairs(effects) do
+		local props = getProps(fx)
+		-- Tách att refs ra khỏi props table
+		local attArg = "nil"
+		local att0 = props["Attachment0"]
+		local att1 = props["Attachment1"]
+		if att0 or att1 then
+			local attParts = {}
+			if att0 and type(att0)=="string" and attVars[att0] then
+				table.insert(attParts, "Attachment0="..attVars[att0])
+			end
+			if att1 and type(att1)=="string" and attVars[att1] then
+				table.insert(attParts, "Attachment1="..attVars[att1])
+			end
+			if #attParts > 0 then attArg = "{"..table.concat(attParts,", ").."}" end
+		end
+		-- Props không gồm Attachment0/1
+		local propStr = propsToTable(fx, {Attachment0=true, Attachment1=true})
+		if showCmt then table.insert(lines, string.format('-- %s: %s', fx.ClassName, fx.Name)) end
+		table.insert(lines, string.format('createEffect("%s", "%s", %s, %s, %s)',
+			fx.ClassName, fx.Name, partVar, attArg, propStr))
+	end
+
+	-- Other children (không phải effect/attachment): tạo inline đơn giản
 	for oi, other in ipairs(others) do
-		local oVar = safeVar(other.Name, oi)
-		table.insert(lines, "")
-		if showCmt then table.insert(lines, i1.."-- "..other.ClassName..": "..other.Name) end
-		table.insert(lines, i1..string.format('local %s = Instance.new("%s")', oVar, other.ClassName))
-		for _,l in ipairs(genPropsLines(other, oVar, i1, showCmt)) do table.insert(lines, l) end
-		table.insert(lines, i1..string.format('%s.Parent = part', oVar))
+		local oVar = string.format("child%d", oi)
+		local propStr = propsToTable(other)
+		if showCmt then table.insert(lines, string.format('-- %s: %s', other.ClassName, other.Name)) end
+		table.insert(lines, string.format('local %s = createPart("%s", "%s", %s, %s)',
+			oVar, other.Name, other.ClassName, propStr, partVar))
 	end
-
-	table.insert(lines, i1.."return part")
-	table.insert(lines, I.."end")
-	table.insert(lines, "")
-
-	-- ── createAttachments ───────────────────────────────────────
-	if showCmt then table.insert(lines, I.."-- ── Attachments: "..part.Name.." ─────────────────────────") end
-	table.insert(lines, I..string.format("local function createAttachments_%s(part)", suffix))
-	if showCmt then table.insert(lines, i1.."-- Tạo Attachment, trả về table {name = att}") end
-	table.insert(lines, i1.."local att = {}")
-	if #attachments == 0 then
-		if showCmt then table.insert(lines, i1.."-- (không có attachment)") end
-	else
-		for ai, a in ipairs(attachments) do
-			local aVar = safeVar(a.Name, ai)
-			table.insert(lines, "")
-			if showCmt then table.insert(lines, i1.."-- Attachment: "..a.Name) end
-			table.insert(lines, i1..string.format('local %s = Instance.new("Attachment")', aVar))
-			for _,l in ipairs(genPropsLines(a, aVar, i1, showCmt)) do table.insert(lines, l) end
-			table.insert(lines, i1..string.format('%s.Parent = part', aVar))
-			table.insert(lines, i1..string.format('att["%s"] = %s', a.Name, aVar))
-		end
-	end
-	table.insert(lines, "")
-	table.insert(lines, i1.."return att")
-	table.insert(lines, I.."end")
-	table.insert(lines, "")
-
-	-- ── createEffects ───────────────────────────────────────────
-	if showCmt then table.insert(lines, I.."-- ── Effects: "..part.Name.." ────────────────────────────") end
-	table.insert(lines, I..string.format("local function createEffects_%s(part, att)", suffix))
-	if showCmt then table.insert(lines, i1.."-- att = table từ createAttachments (dùng cho Beam/Trail)") end
-	table.insert(lines, i1.."att = att or {}")
-	if #effects == 0 then
-		if showCmt then table.insert(lines, i1.."-- (không có effect)") end
-	else
-		for ei, fx in ipairs(effects) do
-			local fxVar = safeVar(fx.Name, ei)
-			table.insert(lines, "")
-			if showCmt then table.insert(lines, i1.."-- "..fx.ClassName..": "..fx.Name) end
-			table.insert(lines, i1..string.format('local %s = Instance.new("%s")', fxVar, fx.ClassName))
-			local props = getProps(fx)
-			local attRefProps = {Attachment0=true, Attachment1=true}
-			local shown2 = {}
-			-- Attachment refs trước
-			for prop,_ in pairs(attRefProps) do
-				if props[prop] ~= nil then
-					local raw = props[prop]
-					-- Nếu là string (tên attachment), resolve qua att table
-					if type(raw)=="string" then
-						table.insert(lines, i1..string.format('%s.%s = att["%s"]', fxVar, prop, raw))
-					else
-						local lua = valToLua(raw)
-						if lua ~= "nil" then
-							table.insert(lines, i1..string.format('%s.%s = %s', fxVar, prop, lua))
-						end
-					end
-					shown2[prop] = true
-				end
-			end
-			for prop,val in pairs(props) do
-				if not shown2[prop] then
-					local lua = valToLua(val)
-					if lua ~= "nil" then
-						table.insert(lines, i1..string.format('%s.%s = %s', fxVar, prop, lua))
-					end
-				end
-			end
-			table.insert(lines, i1..string.format('%s.Name = "%s"', fxVar, fx.Name))
-			table.insert(lines, i1..string.format('%s.Parent = part', fxVar))
-		end
-	end
-	table.insert(lines, I.."end")
-	table.insert(lines, "")
-
-	-- Call lines
-	local callLines = {}
-	if showCmt then table.insert(callLines, "-- "..part.Name) end
-	table.insert(callLines, string.format("local p_%s = createPart_%s()", suffix, suffix))
-	table.insert(callLines, string.format("local a_%s = createAttachments_%s(p_%s)", suffix, suffix, suffix))
-	table.insert(callLines, string.format("createEffects_%s(p_%s, a_%s)", suffix, suffix, suffix))
-
-	return lines, callLines
-end
-
--- Sinh code cho Model/Folder → 1 function createModel_<suffix>(parent)
--- BasePart con → 3 sub-functions local bên trong
--- Các child khác → tạo thẳng bên trong
-local function genModelFunction(inst, suffix, parentVarOuter, showCmt)
-	local lines = {}
-	local i1 = "    "
-
-	if showCmt then
-		table.insert(lines, "-- ══════════════════════════════════════════════════════")
-		table.insert(lines, string.format("-- Model: %s [%s]", inst.Name, inst.ClassName))
-		table.insert(lines, "-- ══════════════════════════════════════════════════════")
-	end
-	table.insert(lines, string.format("local function createModel_%s(parent)", suffix))
-	if showCmt then table.insert(lines, i1.."-- Tạo toàn bộ "..inst.ClassName..": "..inst.Name) end
-	table.insert(lines, i1..string.format('local model = Instance.new("%s")', inst.ClassName))
-	for _,l in ipairs(genPropsLines(inst, "model", i1, showCmt)) do table.insert(lines, l) end
-	table.insert(lines, i1.."model.Parent = parent")
-	table.insert(lines, "")
-
-	-- Phân loại children
-	local partChildren = {}
-	local otherChildren = {}
-	for _,child in ipairs(inst:GetChildren()) do
-		if BASEPART_SET[child.ClassName] then
-			table.insert(partChildren, child)
-		else
-			table.insert(otherChildren, child)
-		end
-	end
-
-	-- Sub-functions cho từng BasePart con (local bên trong createModel)
-	local subCallLines = {}
-	for pi, part in ipairs(partChildren) do
-		local pSuffix = safeVar(part.Name, pi)
-		-- Các sub-functions là local bên trong createModel (indent i1)
-		local funcLines, callLines = genPartFunctions(part, pSuffix, "model", i1, showCmt)
-		for _,l in ipairs(funcLines) do table.insert(lines, i1..l) end
-		for _,l in ipairs(callLines) do table.insert(subCallLines, i1..l) end
-	end
-
-	-- Other children trực tiếp
-	if #otherChildren > 0 then
-		if showCmt then table.insert(lines, i1.."-- Children khác") end
-		for oi, other in ipairs(otherChildren) do
-			local oVar = safeVar(other.Name, oi)
-			table.insert(lines, "")
-			if showCmt then table.insert(lines, i1.."-- "..other.ClassName..": "..other.Name) end
-			table.insert(lines, i1..string.format('local %s = Instance.new("%s")', oVar, other.ClassName))
-			for _,l in ipairs(genPropsLines(other, oVar, i1, showCmt)) do table.insert(lines, l) end
-			table.insert(lines, i1..string.format('%s.Parent = model', oVar))
-		end
-		table.insert(lines, "")
-	end
-
-	-- Gọi sub-functions
-	if #subCallLines > 0 then
-		if showCmt then table.insert(lines, i1.."-- Tạo từng Part") end
-		for _,l in ipairs(subCallLines) do table.insert(lines, l) end
-		table.insert(lines, "")
-	end
-
-	table.insert(lines, i1.."return model")
-	table.insert(lines, "end")
-	table.insert(lines, "")
 
 	return lines
 end
 
--- ==================== MAIN CODEGEN ENTRY ====================
---[[
-  genFunctionCode(inst, showComments)
-  → Trả về string Lua hoàn chỉnh theo dạng function.
-  - BasePart → 3 functions top-level + call lines
-  - Model/Folder/khác → createModel() top-level + call line
-]]
+-- ── Sinh toàn bộ output cho tab Lua ───────────────────────────────────────
 local function genFunctionCode(inst, showCmt)
 	local lines = {}
 
@@ -407,46 +321,72 @@ local function genFunctionCode(inst, showCmt)
 		table.insert(lines, "")
 	end
 
-	local callSection = {}
+	-- Luôn emit 3 generic functions ở đầu
+	table.insert(lines, "-- ── Helper functions (dùng chung) ──────────────────────")
+	table.insert(lines, GENERIC_FUNCTIONS)
 
 	if BASEPART_SET[inst.ClassName] then
-		-- ── BasePart trực tiếp ──────────────────────────────────
-		local suffix = safeVar(inst.Name, 1)
-		local funcLines, callLines = genPartFunctions(inst, suffix, "workspace", "", showCmt)
-		for _,l in ipairs(funcLines) do table.insert(lines, l) end
+		-- ── Single BasePart ─────────────────────────────────────
+		if showCmt then table.insert(lines, "-- ── Tạo Part ──────────────────────────────────────────") end
+		local pVar = "p1"
+		local propStr = propsToTable(inst)
+		table.insert(lines, string.format('local %s = createPart("%s", "%s", %s, workspace)',
+			pVar, inst.Name, inst.ClassName, propStr))
+		table.insert(lines, "")
+		local callLines = genPartCallLines(inst, pVar, showCmt)
+		for _, l in ipairs(callLines) do table.insert(lines, l) end
 
-		if showCmt then
-			table.insert(callSection, "-- ── Khởi tạo ──────────────────────────────────────────")
-		end
-		for _,l in ipairs(callLines) do table.insert(callSection, l) end
 	else
 		-- ── Model / Folder / khác ───────────────────────────────
-		local suffix = safeVar(inst.Name, 1)
-		local modelLines = genModelFunction(inst, suffix, "workspace", showCmt)
-		for _,l in ipairs(modelLines) do table.insert(lines, l) end
-
 		if showCmt then
-			table.insert(callSection, "-- ── Khởi tạo ──────────────────────────────────────────")
+			table.insert(lines, "-- ── Tạo Model ─────────────────────────────────────────")
 		end
-		table.insert(callSection, string.format("local model_%s = createModel_%s(workspace)", suffix, suffix))
-	end
-
-	-- Thêm call section
-	if #callSection > 0 then
+		-- createModel wrapper function
+		table.insert(lines, string.format('local function createModel_%s(parent)',
+			safeVar(inst.Name, 1)))
+		local i1 = "    "
+		-- Tạo root container
+		local propStr = propsToTable(inst)
+		table.insert(lines, i1..string.format('local model = createPart("%s", "%s", %s, parent)',
+			inst.Name, inst.ClassName, propStr))
 		table.insert(lines, "")
-		for _,l in ipairs(callSection) do table.insert(lines, l) end
+
+		-- Từng child
+		local partIdx = 0
+		for _, child in ipairs(inst:GetChildren()) do
+			if BASEPART_SET[child.ClassName] then
+				partIdx = partIdx + 1
+				local pVar = string.format("p%d", partIdx)
+				local cPropStr = propsToTable(child)
+				if showCmt then table.insert(lines, i1..string.format('-- Part: %s', child.Name)) end
+				table.insert(lines, i1..string.format('local %s = createPart("%s", "%s", %s, model)',
+					pVar, child.Name, child.ClassName, cPropStr))
+				-- Effects/Attachments của child này
+				local childCallLines = genPartCallLines(child, pVar, showCmt)
+				for _, l in ipairs(childCallLines) do
+					table.insert(lines, i1..l)
+				end
+				table.insert(lines, "")
+			else
+				-- Non-part child (Script, Sound, etc.)
+				local cPropStr = propsToTable(child)
+				if showCmt then table.insert(lines, i1..string.format('-- %s: %s', child.ClassName, child.Name)) end
+				table.insert(lines, i1..string.format('createPart("%s", "%s", %s, model)',
+					child.Name, child.ClassName, cPropStr))
+			end
+		end
+
+		table.insert(lines, i1.."return model")
+		table.insert(lines, "end")
+		table.insert(lines, "")
+		if showCmt then table.insert(lines, "-- ── Khởi tạo ──────────────────────────────────────────") end
+		table.insert(lines, string.format('local model = createModel_%s(workspace)', safeVar(inst.Name, 1)))
 	end
 
 	return table.concat(lines, "\n")
 end
 
--- ==================== SMART FX CODEGEN (Tab FX) ====================
---[[
-  Giống genFunctionCode nhưng:
-  - Luôn dùng 3 functions riêng biệt top-level (không wrap vào createModel)
-  - effectOnlyMode=true → bỏ createPart, thay bằng WaitForChild placeholder
-  - Scan theo từng BasePart tìm thấy trong object được chọn
-]]
+-- ── Sinh output cho tab FX (chỉ effects/attachments, không có createModel) ─
 local function genSmartFX(rootInst, effectOnlyMode, showCmt)
 	local lines = {}
 
@@ -456,113 +396,41 @@ local function genSmartFX(rootInst, effectOnlyMode, showCmt)
 		table.insert(lines, "")
 	end
 
+	-- 3 generic functions luôn có ở đầu
+	table.insert(lines, "-- ── Helper functions (dùng chung) ──────────────────────")
+	table.insert(lines, GENERIC_FUNCTIONS)
+
 	-- Xác định danh sách parts cần xử lý
 	local parts = {}
 	if BASEPART_SET[rootInst.ClassName] then
 		table.insert(parts, rootInst)
 	else
-		for _,child in ipairs(rootInst:GetChildren()) do
+		for _, child in ipairs(rootInst:GetChildren()) do
 			if BASEPART_SET[child.ClassName] then table.insert(parts, child) end
 		end
 		if #parts == 0 then table.insert(parts, rootInst) end
 	end
 
-	local callLines = {}
+	if showCmt then table.insert(lines, "-- ── Setup ──────────────────────────────────────────────") end
 
 	for idx, part in ipairs(parts) do
-		local suffix = safeVar(part.Name, idx)
-		local i1 = "    "
+		local pVar = string.format("p%d", idx)
 
-		local attachments, effects = {}, {}
-		for _,child in ipairs(part:GetChildren()) do
-			if ATTACHMENT_CLASSES[child.ClassName] then table.insert(attachments, child)
-			elseif EFFECT_CLASSES[child.ClassName] then table.insert(effects, child) end
-		end
-
-		-- createPart (bỏ qua nếu effectOnlyMode)
 		if not effectOnlyMode then
-			if showCmt then table.insert(lines, "-- ── Part: "..part.Name.." ────────────────────────────────") end
-			table.insert(lines, string.format("local function createPart_%s()", suffix))
-			table.insert(lines, i1..string.format('local part = Instance.new("%s")', part.ClassName))
-			for _,l in ipairs(genPropsLines(part, "part", i1, showCmt)) do table.insert(lines, l) end
-			table.insert(lines, i1.."part.Parent = workspace")
-			table.insert(lines, i1.."return part")
-			table.insert(lines, "end")
-			table.insert(lines, "")
-		end
-
-		-- createAttachments
-		if showCmt then table.insert(lines, "-- ── Attachments: "..part.Name.." ─────────────────────────") end
-		table.insert(lines, string.format("local function createAttachments_%s(part)", suffix))
-		table.insert(lines, i1.."local att = {}")
-		for ai, a in ipairs(attachments) do
-			local aVar = safeVar(a.Name, ai)
-			table.insert(lines, "")
-			if showCmt then table.insert(lines, i1.."-- Attachment: "..a.Name) end
-			table.insert(lines, i1..string.format('local %s = Instance.new("Attachment")', aVar))
-			for _,l in ipairs(genPropsLines(a, aVar, i1, showCmt)) do table.insert(lines, l) end
-			table.insert(lines, i1..string.format('%s.Parent = part', aVar))
-			table.insert(lines, i1..string.format('att["%s"] = %s', a.Name, aVar))
-		end
-		table.insert(lines, "")
-		table.insert(lines, i1.."return att")
-		table.insert(lines, "end")
-		table.insert(lines, "")
-
-		-- createEffects
-		if showCmt then table.insert(lines, "-- ── Effects: "..part.Name.." ────────────────────────────") end
-		table.insert(lines, string.format("local function createEffects_%s(part, att)", suffix))
-		table.insert(lines, i1.."att = att or {}")
-		for ei, fx in ipairs(effects) do
-			local fxVar = safeVar(fx.Name, ei)
-			table.insert(lines, "")
-			if showCmt then table.insert(lines, i1.."-- "..fx.ClassName..": "..fx.Name) end
-			table.insert(lines, i1..string.format('local %s = Instance.new("%s")', fxVar, fx.ClassName))
-			local props = getProps(fx)
-			local shown2 = {}
-			for prop,_ in pairs({Attachment0=true,Attachment1=true}) do
-				if props[prop] ~= nil then
-					local raw = props[prop]
-					if type(raw)=="string" then
-						table.insert(lines, i1..string.format('%s.%s = att["%s"]', fxVar, prop, raw))
-					else
-						local lua = valToLua(raw)
-						if lua ~= "nil" then table.insert(lines, i1..string.format('%s.%s = %s', fxVar, prop, lua)) end
-					end
-					shown2[prop] = true
-				end
-			end
-			for prop,val in pairs(props) do
-				if not shown2[prop] then
-					local lua = valToLua(val)
-					if lua ~= "nil" then table.insert(lines, i1..string.format('%s.%s = %s', fxVar, prop, lua)) end
-				end
-			end
-			table.insert(lines, i1..string.format('%s.Name = "%s"', fxVar, fx.Name))
-			table.insert(lines, i1..string.format('%s.Parent = part', fxVar))
-		end
-		table.insert(lines, "end")
-		table.insert(lines, "")
-
-		-- Call
-		if showCmt then table.insert(callLines, "-- "..part.Name) end
-		if not effectOnlyMode then
-			table.insert(callLines, string.format("local p_%s = createPart_%s()", suffix, suffix))
+			local propStr = propsToTable(part)
+			if showCmt then table.insert(lines, string.format('-- Part: %s', part.Name)) end
+			table.insert(lines, string.format('local %s = createPart("%s", "%s", %s, workspace)',
+				pVar, part.Name, part.ClassName, propStr))
 		else
-			table.insert(callLines, string.format('local p_%s = workspace:WaitForChild("%s")', suffix, part.Name))
+			if showCmt then table.insert(lines, string.format('-- Dùng part sẵn có: %s', part.Name)) end
+			table.insert(lines, string.format('local %s = workspace:WaitForChild("%s")', pVar, part.Name))
 		end
-		table.insert(callLines, string.format("local a_%s = createAttachments_%s(p_%s)", suffix, suffix, suffix))
-		table.insert(callLines, string.format("createEffects_%s(p_%s, a_%s)", suffix, suffix, suffix))
-		table.insert(callLines, "")
+
+		local callLines = genPartCallLines(part, pVar, showCmt)
+		for _, l in ipairs(callLines) do table.insert(lines, l) end
+		table.insert(lines, "")
 	end
 
-	-- Call section
-	if showCmt then
-		table.insert(lines, "-- ══════════════════════════════════════════════════════")
-		table.insert(lines, "-- Khởi tạo")
-		table.insert(lines, "-- ══════════════════════════════════════════════════════")
-	end
-	for _,l in ipairs(callLines) do table.insert(lines, l) end
 	return table.concat(lines, "\n")
 end
 
